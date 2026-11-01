@@ -60,7 +60,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git curl wget zip unzip python3 python3-pip \
             bison flex libssl-dev build-essential bc rsync cpio \
-            device-tree-compiler libelf-dev dwarves openssl clang lld llvm
+            device-tree-compiler libelf-dev dwarves openssl clang lld llvm ccache
 
       - name: Clone Xiaomi official source (shallow)
         if: inputs.security_patch == 'none'
@@ -142,54 +142,24 @@ jobs:
         run: |
           bash "$GITHUB_WORKSPACE/scripts/apply_features.sh" "$GITHUB_WORKSPACE/src"
 
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ inputs.mode }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ inputs.mode }}-
+            ccache-${{ runner.os }}-
+
       - name: Build kernel
         id: build
+        env:
+          JOBS: "0"
         run: |
-          set -o pipefail
-          cd src
-          if [ -x tools/bazel ]; then
-            TARGETS="//:annibale_consolidate_dist //:annibale_dist //msm-kernel:annibale_consolidate_dist //msm-kernel:annibale_dist"
-            OK=""
-            for T in $TARGETS; do
-              echo "=========== trying target: $T ==========="
-              if timeout 18000 tools/bazel build "$T" 2>&1 | tee "build-$(echo "$T" | tr '/:' '__').log"; then
-                OK="$T"
-                break
-              fi
-              echo "target $T failed, trying next"
-            done
-            if [ -z "$OK" ]; then
-              echo "::error::all Kleaf build targets failed"
-              exit 1
-            fi
-            echo "built target: $OK"
-          else
-            echo "tools/bazel not found -> fallback to plain kbuild"
-            export ARCH=arm64 LLVM=1
-            CONFIGS=""
-            for c in arch/arm64/configs/vendor/annibale_consolidate.config \
-                     arch/arm64/configs/vendor/annibale_perf.config; do
-              [ -f "$c" ] && CONFIGS="$CONFIGS $c"
-            done
-            [ -n "$CONFIGS" ] || { echo "::error::no annibale vendor config found"; exit 1; }
-            for CFG in $CONFIGS; do
-              BASE=$(basename "$CFG" .config)
-              OD="out-$BASE"
-              LOG="plain-$BASE.log"
-              echo "=========== plain kbuild: $CFG ==========="
-              rm -rf "$OD"; mkdir -p "$OD"
-              cp "$CFG" "$OD/.config"
-              if ! make O="$OD" ARCH=arm64 LLVM=1 olddefconfig 2>&1 | tee "$LOG"; then
-                echo "olddefconfig failed for $CFG"; continue
-              fi
-              if make O="$OD" ARCH=arm64 LLVM=1 -j"$(nproc)" Image 2>&1 | tee -a "$LOG"; then
-                printf 'PLAIN_OUT=%s\nPLAIN_IMAGE=%s/arch/arm64/boot/Image\n' "$OD" "$OD" > plain-build.txt
-                break
-              fi
-            done
-            [ -f plain-build.txt ] || { echo "::error::plain kbuild failed"; exit 1; }
-            cat plain-build.txt
+          if [ "${JOBS}" = "0" ] || [ -z "${JOBS}" ]; then
+            export JOBS="$(nproc)"
           fi
+          bash "$GITHUB_WORKSPACE/scripts/build_kernel.sh" "$GITHUB_WORKSPACE/src"
 
       - name: Collect Image
         run: |
@@ -224,5 +194,6 @@ jobs:
             src/build-*.log
             src/bazel-*.log
             src/plain-*.log
+            src/merge-*.log
           if-no-files-found: warn
           retention-days: 14
