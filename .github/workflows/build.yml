@@ -155,11 +155,12 @@ jobs:
           strings "$GITHUB_WORKSPACE/Image" | grep -m1 'Linux version' || true
           strings "$GITHUB_WORKSPACE/Image" | grep -m1 'vermagic=' || true
 
-      - name: Package boot.img
+      - name: Package AnyKernel3 (kernel only)
         run: |
           set -euo pipefail
-          bash "$GITHUB_WORKSPACE/scripts/package_boot.sh" \
-            "$GITHUB_WORKSPACE/Image" "$GITHUB_WORKSPACE/out_boot"
+          bash "$GITHUB_WORKSPACE/scripts/package_anykernel3.sh" \
+            "$GITHUB_WORKSPACE/Image" "$GITHUB_WORKSPACE/out_ak3" \
+            "annibale-${{ matrix.target }}-${{ inputs.mode }}-AnyKernel3.zip"
 
       - name: Upload artifacts
         if: always()
@@ -167,8 +168,7 @@ jobs:
         with:
           name: annibale-${{ matrix.target }}-${{ inputs.mode }}
           path: |
-            out_boot/boot.img
-            out_boot/Image
+            out_ak3/*.zip
             Image
             src/*.log
             src/build-*.log
