@@ -1,0 +1,175 @@
+name: build-annibale
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "baseline | bakasu | full"
+        type: choice
+        options: [baseline, bakasu, full]
+        default: baseline
+      security_patch:
+        description: "none = 不合并 ACK；后续实验用"
+        type: string
+        default: none
+      enable_bbg:
+        type: boolean
+        default: true
+      enable_droidspaces:
+        type: boolean
+        default: true
+      enable_ntsync:
+        type: boolean
+        default: true
+      enable_nomount:
+        type: boolean
+        default: true
+      enable_zram:
+        type: boolean
+        default: true
+      enable_network:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          set -x
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/chromium \
+            /usr/local/lib/node_modules /opt/az /usr/local/lib/heroku || true
+          sudo apt-get purge -y firefox google-chrome-stable microsoft-edge-stable || true
+          sudo apt-get autoremove -y || true
+          sudo apt-get clean || true
+          docker rmi -f $(docker images -q) 2>/dev/null || true
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl wget zip unzip python3 python3-pip \
+            bison flex libssl-dev build-essential bc rsync cpio \
+            device-tree-compiler libelf-dev dwarves openssl
+
+      - name: Clone Xiaomi official source (shallow)
+        if: inputs.security_patch == 'none'
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch annibale-w-oss \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git src
+          cd src
+          echo "=== head of Makefile ==="
+          head -8 Makefile
+
+      - name: Clone Xiaomi official source (full history for CVE merge)
+        if: inputs.security_patch != 'none'
+        run: |
+          set -euo pipefail
+          git clone --branch annibale-w-oss \
+            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git src
+          cd src
+          echo "=== head of Makefile ==="
+          head -8 Makefile
+
+      - name: Backport security patches (experimental)
+        if: inputs.security_patch != 'none'
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/backport_security.sh" \
+            "$GITHUB_WORKSPACE/src" "${{ inputs.security_patch }}"
+
+      - name: Diagnose source layout
+        run: |
+          cd src
+          echo "=== top-level ==="
+          ls -la | head -80
+          echo "=== build configs / bzl / configs ==="
+          find . -maxdepth 3 \( \
+            -name 'build.config.msm.annibale' -o \
+            -name 'annibale*.bzl' -o \
+            -name 'annibale_*.config' -o \
+            -name 'msm_platforms.bzl' -o \
+            -name 'target_variants.bzl' \) -print | sort
+          echo "=== tools dir ==="
+          ls -la tools 2>/dev/null | head -40 || true
+          echo "=== bazel wrapper? ==="
+          test -x tools/bazel && echo "tools/bazel: yes" || echo "tools/bazel: no"
+
+      - name: Apply features
+        env:
+          MODE: ${{ inputs.mode }}
+          ENABLE_BBG: ${{ inputs.enable_bbg && '1' || '0' }}
+          ENABLE_DROIDSPACES: ${{ inputs.enable_droidspaces && '1' || '0' }}
+          ENABLE_NTSYNC: ${{ inputs.enable_ntsync && '1' || '0' }}
+          ENABLE_NOMOUNT: ${{ inputs.enable_nomount && '1' || '0' }}
+          ENABLE_ZRAM: ${{ inputs.enable_zram && '1' || '0' }}
+          ENABLE_NETWORK: ${{ inputs.enable_network && '1' || '0' }}
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/apply_features.sh" "$GITHUB_WORKSPACE/src"
+
+      - name: Build kernel (Kleaf)
+        id: build
+        run: |
+          set -o pipefail
+          cd src
+          TARGETS="//:annibale_consolidate_dist //:annibale_dist //msm-kernel:annibale_consolidate_dist //msm-kernel:annibale_dist"
+          OK=""
+          for T in $TARGETS; do
+            echo "=========== trying target: $T ==========="
+            if timeout 18000 tools/bazel build "$T" 2>&1 | tee "build-$(echo "$T" | tr '/:' '__').log"; then
+              OK="$T"
+              break
+            fi
+            echo "target $T failed, trying next"
+          done
+          if [ -z "$OK" ]; then
+            echo "::error::all build targets failed"
+            exit 1
+          fi
+          echo "TARGET=$OK" >> "$GITHUB_ENV"
+          echo "built target: $OK"
+
+      - name: Collect Image
+        run: |
+          set -euo pipefail
+          cd src
+          IMG=$(find out bazel-bin -type f -name 'Image' -size +15M 2>/dev/null | head -n 1 || true)
+          if [ -z "$IMG" ]; then
+            echo "::error::Image not found"
+            find out bazel-bin -maxdepth 4 -type f 2>/dev/null | head -50 || true
+            exit 1
+          fi
+          echo "Image: $IMG"
+          cp "$IMG" "$GITHUB_WORKSPACE/Image"
+          strings "$GITHUB_WORKSPACE/Image" | grep -m1 'Linux version' || true
+          strings "$GITHUB_WORKSPACE/Image" | grep -m1 'vermagic=' || true
+
+      - name: Package boot.img
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/scripts/package_boot.sh" \
+            "$GITHUB_WORKSPACE/Image" "$GITHUB_WORKSPACE/out_boot"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: annibale-${{ inputs.mode }}
+          path: |
+            out_boot/boot.img
+            out_boot/Image
+            Image
+            src/build-*.log
+            src/bazel-*.log
+          if-no-files-found: warn
+          retention-days: 14

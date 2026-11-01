@@ -1,0 +1,4 @@
+out_boot/
+Image
+__pycache__/
+*.log
