@@ -60,7 +60,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git curl wget zip unzip python3 python3-pip \
             bison flex libssl-dev build-essential bc rsync cpio \
-            device-tree-compiler libelf-dev dwarves openssl
+            device-tree-compiler libelf-dev dwarves openssl clang lld llvm
 
       - name: Clone Xiaomi official source (shallow)
         if: inputs.security_patch == 'none'
@@ -105,6 +105,27 @@ jobs:
           echo "=== bazel wrapper? ==="
           test -x tools/bazel && echo "tools/bazel: yes" || echo "tools/bazel: no"
 
+      - name: Diagnose build system
+        run: |
+          cd src
+          echo "=== build.config.msm.annibale ==="
+          cat build.config.msm.annibale
+          echo "=== build.config.msm.sun ==="
+          cat build.config.msm.sun
+          echo "=== build.config.msm.common (head) ==="
+          sed -n '1,120p' build.config.msm.common
+          echo "=== vendor configs ==="
+          ls -l arch/arm64/configs/vendor/annibale* 2>/dev/null || true
+          head -20 arch/arm64/configs/vendor/annibale_consolidate.config 2>/dev/null || true
+          echo "=== available build entrypoints ==="
+          ls -l build_with_bazel.py 2>/dev/null || true
+          python3 build_with_bazel.py --help 2>&1 | head -30 || true
+          echo "=== kleaf/prebuilts siblings? ==="
+          ls -d build/kernel prebuilts common 2>/dev/null || echo "none of build/kernel prebuilts common exist"
+          echo "=== clang ==="
+          clang --version | head -2
+          ld.lld --version | head -1
+
       - name: Apply features
         env:
           MODE: ${{ inputs.mode }}
@@ -117,36 +138,63 @@ jobs:
         run: |
           bash "$GITHUB_WORKSPACE/scripts/apply_features.sh" "$GITHUB_WORKSPACE/src"
 
-      - name: Build kernel (Kleaf)
+      - name: Build kernel
         id: build
         run: |
           set -o pipefail
           cd src
-          TARGETS="//:annibale_consolidate_dist //:annibale_dist //msm-kernel:annibale_consolidate_dist //msm-kernel:annibale_dist"
-          OK=""
-          for T in $TARGETS; do
-            echo "=========== trying target: $T ==========="
-            if timeout 18000 tools/bazel build "$T" 2>&1 | tee "build-$(echo "$T" | tr '/:' '__').log"; then
-              OK="$T"
-              break
+          if [ -x tools/bazel ]; then
+            TARGETS="//:annibale_consolidate_dist //:annibale_dist //msm-kernel:annibale_consolidate_dist //msm-kernel:annibale_dist"
+            OK=""
+            for T in $TARGETS; do
+              echo "=========== trying target: $T ==========="
+              if timeout 18000 tools/bazel build "$T" 2>&1 | tee "build-$(echo "$T" | tr '/:' '__').log"; then
+                OK="$T"
+                break
+              fi
+              echo "target $T failed, trying next"
+            done
+            if [ -z "$OK" ]; then
+              echo "::error::all Kleaf build targets failed"
+              exit 1
             fi
-            echo "target $T failed, trying next"
-          done
-          if [ -z "$OK" ]; then
-            echo "::error::all build targets failed"
-            exit 1
+            echo "built target: $OK"
+          else
+            echo "tools/bazel not found -> fallback to plain kbuild"
+            export ARCH=arm64 LLVM=1
+            CONFIGS=""
+            for c in arch/arm64/configs/vendor/annibale_consolidate.config \
+                     arch/arm64/configs/vendor/annibale_perf.config; do
+              [ -f "$c" ] && CONFIGS="$CONFIGS $c"
+            done
+            [ -n "$CONFIGS" ] || { echo "::error::no annibale vendor config found"; exit 1; }
+            for CFG in $CONFIGS; do
+              BASE=$(basename "$CFG" .config)
+              OD="out-$BASE"
+              LOG="plain-$BASE.log"
+              echo "=========== plain kbuild: $CFG ==========="
+              rm -rf "$OD"; mkdir -p "$OD"
+              cp "$CFG" "$OD/.config"
+              if ! make O="$OD" ARCH=arm64 LLVM=1 olddefconfig 2>&1 | tee "$LOG"; then
+                echo "olddefconfig failed for $CFG"; continue
+              fi
+              if make O="$OD" ARCH=arm64 LLVM=1 -j"$(nproc)" Image 2>&1 | tee -a "$LOG"; then
+                printf 'PLAIN_OUT=%s\nPLAIN_IMAGE=%s/arch/arm64/boot/Image\n' "$OD" "$OD" > plain-build.txt
+                break
+              fi
+            done
+            [ -f plain-build.txt ] || { echo "::error::plain kbuild failed"; exit 1; }
+            cat plain-build.txt
           fi
-          echo "TARGET=$OK" >> "$GITHUB_ENV"
-          echo "built target: $OK"
 
       - name: Collect Image
         run: |
           set -euo pipefail
           cd src
-          IMG=$(find out bazel-bin -type f -name 'Image' -size +15M 2>/dev/null | head -n 1 || true)
+          IMG=$(find out out-* bazel-bin -type f -name 'Image' -size +15M 2>/dev/null | head -n 1 || true)
           if [ -z "$IMG" ]; then
             echo "::error::Image not found"
-            find out bazel-bin -maxdepth 4 -type f 2>/dev/null | head -50 || true
+            find out out-* bazel-bin -maxdepth 6 -type f 2>/dev/null | head -50 || true
             exit 1
           fi
           echo "Image: $IMG"
@@ -171,5 +219,6 @@ jobs:
             Image
             src/build-*.log
             src/bazel-*.log
+            src/plain-*.log
           if-no-files-found: warn
           retention-days: 14

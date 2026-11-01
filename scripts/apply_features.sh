@@ -18,6 +18,13 @@ warn() { printf '::warning::%s\n' "$*"; }
 
 cd "$SRC"
 
+# Baseline must stay 100% unmodified: no patches, no config changes.
+if [ "$MODE" = "baseline" ]; then
+  log "MODE=baseline -> no features/patches applied"
+  git status --short | head -20 || true
+  exit 0
+fi
+
 # ---------------------------------------------------------------- config files
 CONFIGS=$(find . -maxdepth 5 -type f \( -name 'annibale_consolidate.config' -o -name 'annibale_perf.config' \) | sort)
 if [ -z "$CONFIGS" ]; then
@@ -29,9 +36,13 @@ if [ -z "$CONFIGS" ]; then
 fi
 log "config files:"; echo "$CONFIGS"
 
-add_cfg() { # add_cfg NAME=VALUE
-  local line="$1" f
+add_cfg() { # add_cfg NAME=VALUE  (also rewrites "# NAME is not set" / old value)
+  local line="$1" name value f
+  name="${line%%=*}"
+  value="${line#*=}"
   for f in $CONFIGS; do
+    sed -i -e "s|^${name}=.*|${name}=${value}|" \
+           -e "s|^# ${name} is not set|${name}=${value}|" "$f"
     grep -qxF "$line" "$f" 2>/dev/null || printf '%s\n' "$line" >> "$f"
   done
 }
@@ -86,12 +97,22 @@ if [ "$ENABLE_DROIDSPACES" = "1" ]; then
   rm -rf /tmp/Droidspaces-OSS
   git clone --depth 1 https://github.com/ravindu644/Droidspaces-OSS.git /tmp/Droidspaces-OSS
   PATCH_DIR=/tmp/Droidspaces-OSS/Documentation/resources/kernel-patches/GKI/below-kernel-6.12
-  if patch -p1 --dry-run < "$PATCH_DIR/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch" >/dev/null 2>&1; then
-    patch -p1 --forward < "$PATCH_DIR/001.GKI-below-6.12-fix_sysvipc_kabi_6_7_8.patch"
-  else
-    warn "SYSVIPC kABI patch does not apply cleanly to 6.6.57; continuing WITHOUT SYSVIPC"
-    ENABLE_DROIDSPACES=0
+  APPLIED_SLOT=""
+  for SLOT in 6_7_8 3_4_5 1_2_3; do
+    P="$PATCH_DIR/001.GKI-below-6.12-fix_sysvipc_kabi_${SLOT}.patch"
+    [ -f "$P" ] || continue
+    # fuzz=0: kABI patch MUST apply exactly, otherwise struct layout may silently break
+    if patch -p1 --fuzz=0 --dry-run < "$P" >/dev/null 2>&1; then
+      patch -p1 --fuzz=0 --forward < "$P"
+      APPLIED_SLOT="$SLOT"
+      break
+    fi
+  done
+  if [ -z "$APPLIED_SLOT" ]; then
+    echo "::error::SYSVIPC kABI patch does not apply cleanly (fuzz=0) to this tree; refusing to enable SYSVIPC"
+    exit 1
   fi
+  log "applied SYSVIPC kABI patch (slot $APPLIED_SLOT)"
   if [ "$ENABLE_DROIDSPACES" = "1" ]; then
     add_cfg 'CONFIG_SYSVIPC=y'
     add_cfg 'CONFIG_POSIX_MQUEUE=y'
