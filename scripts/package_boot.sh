@@ -13,7 +13,14 @@ cp -f "$IMG" "$OUT/Image"
 WORK=$(mktemp -d)
 git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg "$WORK/mkbootimg"
 git clone --depth=1 https://android.googlesource.com/platform/external/avb "$WORK/avb"
-AVBTOOL=$(find "$WORK/avb" -maxdepth 3 -type f -name 'avbtool*' | head -n1 || true)
+AVBTOOL=""
+for c in "$WORK/avb/avbtool" "$WORK/avb/avbtool.py"; do
+  if [ -f "$c" ]; then AVBTOOL="$c"; break; fi
+done
+if [ -z "$AVBTOOL" ]; then
+  AVBTOOL=$(find "$WORK/avb" -type f \( -name 'avbtool' -o -name 'avbtool.py' \) \
+    -not -path '*/test/*' | head -n1 || true)
+fi
 MKBOOTIMG=$(find "$WORK/mkbootimg" -maxdepth 3 -type f -name 'mkbootimg.py' | head -n1 || true)
 [ -n "$MKBOOTIMG" ] || { echo "::error::mkbootimg.py not found"; exit 1; }
 [ -n "$AVBTOOL" ] || { echo "::error::avbtool not found"; exit 1; }
