@@ -12,6 +12,10 @@ on:
         description: "none = 不合并 ACK 安全补丁"
         type: string
         default: none
+      localversion:
+        description: "GKI 内核 localversion（必须与 stock uname -r 的后缀一致）"
+        type: string
+        default: "-android15-8-g0908354dac1b-ab16143355-4k"
       enable_bbg:
         type: boolean
         default: true
@@ -130,6 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.target }}" = "gki" ]; then
+            export KERNEL_LOCALVERSION="${{ inputs.localversion }}"
             bash "$GITHUB_WORKSPACE/scripts/build_gki.sh" "$GITHUB_WORKSPACE/src"
           else
             bash "$GITHUB_WORKSPACE/scripts/build_kernel.sh" "$GITHUB_WORKSPACE/src"

@@ -26,9 +26,25 @@ OUT=out-gki
 rm -rf "$OUT"; mkdir -p "$OUT"
 
 make O="$OUT" ARCH=arm64 LLVM=1 CC="$CC" gki_defconfig 2>&1 | tee gki-config.log
+
+# Keep the compiled kernel release identical to the stock device kernel:
+#   stock: 6.6.118-android15-8-g0908354dac1b-ab16143355-4k
+if [ -n "${KERNEL_LOCALVERSION:-}" ]; then
+  ./scripts/config --file "$OUT/.config" \
+    --set-str LOCALVERSION "$KERNEL_LOCALVERSION" \
+    --disable LOCALVERSION_AUTO
+  make O="$OUT" ARCH=arm64 LLVM=1 CC="$CC" olddefconfig 2>&1 | tee -a gki-config.log
+fi
+
+REL=$(make -s O="$OUT" ARCH=arm64 LLVM=1 CC="$CC" kernelrelease 2>/dev/null | tail -n 1 || true)
+echo "kernelrelease: ${REL}"
+
 grep -E '^CONFIG_(LOCALVERSION|ARM64_4K_PAGES|MODVERSIONS|KASAN|LOCKDEP)=' "$OUT/.config" || true
 
 make O="$OUT" ARCH=arm64 LLVM=1 CC="$CC" -j"$JOBS" Image 2>&1 | tee gki-build.log
+
+strings "$OUT/arch/arm64/boot/Image" | grep -m1 'Linux version' | tee -a gki-build.log || true
+strings "$OUT/arch/arm64/boot/Image" | grep -m1 'vermagic=' | tee -a gki-build.log || true
 
 printf 'PLAIN_OUT=%s\nPLAIN_IMAGE=%s/arch/arm64/boot/Image\n' "$OUT" "$OUT" > plain-build.txt
 echo "BUILD_OK variant=gki"
