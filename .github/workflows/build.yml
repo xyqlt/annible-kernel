@@ -126,6 +126,10 @@ jobs:
           clang --version | head -2
           ld.lld --version | head -1
 
+      - name: Prune references to unpublished vendor dirs
+        run: |
+          python3 "$GITHUB_WORKSPACE/scripts/prune_missing.py" "$GITHUB_WORKSPACE/src"
+
       - name: Apply features
         env:
           MODE: ${{ inputs.mode }}
