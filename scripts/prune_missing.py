@@ -56,6 +56,7 @@ def prune_makefile(path):
     except OSError:
         return 0
     changed = 0
+    here = os.path.dirname(path)
     for i, line in enumerate(lines):
         m = make_assign.match(line)
         if not m:
@@ -64,15 +65,15 @@ def prune_makefile(path):
         if not (lhs.startswith("obj-") or lhs.startswith("subdir-")
                 or lhs.startswith("always-") or lhs.startswith("extra-")):
             continue
-        if not lhs.endswith(":") and "+" not in line[: line.find("=")]:
-            pass
         tokens = rhs.split()
         if not tokens:
             continue
         kept, dropped = [], []
         for tok in tokens:
+            # Makefile subdirs are relative to the Makefile's own directory,
+            # NOT to the kernel tree root.
             if (tok.endswith("/") and "$" not in tok and "*" not in tok
-                    and not os.path.exists(tok.rstrip("/"))):
+                    and not os.path.exists(os.path.join(here, tok.rstrip("/")))):
                 dropped.append(tok)
             else:
                 kept.append(tok)
