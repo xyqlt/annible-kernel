@@ -9,7 +9,7 @@ on:
         options: [baseline, bakasu, full]
         default: baseline
       security_patch:
-        description: "none = 不合并 ACK；后续实验用"
+        description: "none = 不合并 ACK 安全补丁"
         type: string
         default: none
       enable_bbg:
@@ -36,8 +36,13 @@ permissions:
 
 jobs:
   build:
+    name: build-${{ matrix.target }}
     runs-on: ubuntu-24.04
     timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [gki, xiaomi]
 
     steps:
       - name: Checkout build repo
@@ -62,75 +67,43 @@ jobs:
             bison flex libssl-dev build-essential bc rsync cpio \
             device-tree-compiler libelf-dev dwarves openssl clang lld llvm ccache
 
-      - name: Clone Xiaomi official source (shallow)
-        if: inputs.security_patch == 'none'
+      - name: Clone GKI source (ACK android15-6.6-2026-01)
+        if: matrix.target == 'gki'
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch android15-6.6-2026-01 \
+            https://android.googlesource.com/kernel/common src
+          cd src
+          head -6 Makefile
+
+      - name: Clone Xiaomi source (annibale-w-oss)
+        if: matrix.target == 'xiaomi'
         run: |
           set -euo pipefail
           git clone --depth=1 --branch annibale-w-oss \
             https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git src
           cd src
-          echo "=== head of Makefile ==="
-          head -8 Makefile
+          head -6 Makefile
 
-      - name: Clone Xiaomi official source (full history for CVE merge)
-        if: inputs.security_patch != 'none'
-        run: |
-          set -euo pipefail
-          git clone --branch annibale-w-oss \
-            https://github.com/MiCode/Xiaomi_Kernel_OpenSource.git src
-          cd src
-          echo "=== head of Makefile ==="
-          head -8 Makefile
-
-      - name: Backport security patches (experimental)
-        if: inputs.security_patch != 'none'
-        run: |
-          bash "$GITHUB_WORKSPACE/scripts/backport_security.sh" \
-            "$GITHUB_WORKSPACE/src" "${{ inputs.security_patch }}"
-
-      - name: Diagnose source layout
+      - name: Diagnose Xiaomi source layout
+        if: matrix.target == 'xiaomi'
         run: |
           cd src
           echo "=== top-level ==="
-          ls -la | head -80
-          echo "=== build configs / bzl / configs ==="
-          find . -maxdepth 3 \( \
-            -name 'build.config.msm.annibale' -o \
-            -name 'annibale*.bzl' -o \
-            -name 'annibale_*.config' -o \
-            -name 'msm_platforms.bzl' -o \
-            -name 'target_variants.bzl' \) -print | sort
-          echo "=== tools dir ==="
-          ls -la tools 2>/dev/null | head -40 || true
-          echo "=== bazel wrapper? ==="
-          test -x tools/bazel && echo "tools/bazel: yes" || echo "tools/bazel: no"
-
-      - name: Diagnose build system
-        run: |
-          cd src
-          echo "=== build.config.msm.annibale ==="
-          cat build.config.msm.annibale
-          echo "=== build.config.msm.sun ==="
-          cat build.config.msm.sun
-          echo "=== build.config.msm.common (head) ==="
-          sed -n '1,120p' build.config.msm.common
-          echo "=== vendor configs ==="
+          ls -la | head -60
+          echo "=== build configs / vendor configs ==="
+          ls -l build.config.msm.annibale build.config.msm.sun build.config.msm.perf 2>/dev/null || true
           ls -l arch/arm64/configs/vendor/annibale* 2>/dev/null || true
-          head -20 arch/arm64/configs/vendor/annibale_consolidate.config 2>/dev/null || true
-          echo "=== available build entrypoints ==="
-          ls -l build_with_bazel.py 2>/dev/null || true
-          python3 build_with_bazel.py --help 2>&1 | head -30 || true
-          echo "=== kleaf/prebuilts siblings? ==="
-          ls -d build/kernel prebuilts common 2>/dev/null || echo "none of build/kernel prebuilts common exist"
-          echo "=== clang ==="
-          clang --version | head -2
-          ld.lld --version | head -1
+          echo "=== GKI defconfig fragment ==="
+          grep -E '^CONFIG_(LOCALVERSION|KASAN|LOCKDEP)=' arch/arm64/configs/gki_defconfig || true
 
-      - name: Prune references to unpublished vendor dirs
+      - name: Prune unpublished vendor dirs
+        if: matrix.target == 'xiaomi'
         run: |
           python3 "$GITHUB_WORKSPACE/scripts/prune_missing.py" "$GITHUB_WORKSPACE/src"
 
-      - name: Apply features
+      - name: Apply features (Xiaomi target only)
+        if: matrix.target == 'xiaomi'
         env:
           MODE: ${{ inputs.mode }}
           ENABLE_BBG: ${{ inputs.enable_bbg && '1' || '0' }}
@@ -146,26 +119,27 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-${{ inputs.mode }}-${{ github.sha }}
+          key: ccache-${{ runner.os }}-${{ matrix.target }}-${{ inputs.mode }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ inputs.mode }}-
-            ccache-${{ runner.os }}-
+            ccache-${{ runner.os }}-${{ matrix.target }}-${{ inputs.mode }}-
+            ccache-${{ runner.os }}-${{ matrix.target }}-
 
       - name: Build kernel
-        id: build
         env:
           JOBS: "0"
         run: |
-          if [ "${JOBS}" = "0" ] || [ -z "${JOBS}" ]; then
-            export JOBS="$(nproc)"
+          set -euo pipefail
+          if [ "${{ matrix.target }}" = "gki" ]; then
+            bash "$GITHUB_WORKSPACE/scripts/build_gki.sh" "$GITHUB_WORKSPACE/src"
+          else
+            bash "$GITHUB_WORKSPACE/scripts/build_kernel.sh" "$GITHUB_WORKSPACE/src"
           fi
-          bash "$GITHUB_WORKSPACE/scripts/build_kernel.sh" "$GITHUB_WORKSPACE/src"
 
       - name: Collect Image
         run: |
           set -euo pipefail
           cd src
-          IMG=$(find out out-* bazel-bin -type f -name 'Image' -size +15M 2>/dev/null | head -n 1 || true)
+          IMG=$(find out out-* bazel-bin -type f -name 'Image' -size +10M 2>/dev/null | head -n 1 || true)
           if [ -z "$IMG" ]; then
             echo "::error::Image not found"
             find out out-* bazel-bin -maxdepth 6 -type f 2>/dev/null | head -50 || true
@@ -186,14 +160,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: annibale-${{ inputs.mode }}
+          name: annibale-${{ matrix.target }}-${{ inputs.mode }}
           path: |
             out_boot/boot.img
             out_boot/Image
             Image
+            src/*.log
             src/build-*.log
-            src/bazel-*.log
-            src/plain-*.log
             src/merge-*.log
           if-no-files-found: warn
           retention-days: 14

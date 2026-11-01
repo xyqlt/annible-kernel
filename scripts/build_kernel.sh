@@ -68,13 +68,14 @@ build_variant() {
   return 1
 }
 
-mapfile -t CONS < <(consolidate_fragments)
-if build_variant consolidate "${CONS[@]}"; then
+# Production variant (perf) first; consolidate is a debug config (KASAN/LOCKDEP).
+mapfile -t PERF < <(base_fragments)
+if build_variant perf "${PERF[@]}"; then
   exit 0
 fi
 
-mapfile -t PERF < <(base_fragments)
-if build_variant perf "${PERF[@]}"; then
+mapfile -t CONS < <(consolidate_fragments)
+if build_variant consolidate "${CONS[@]}"; then
   exit 0
 fi
 

@@ -13,16 +13,21 @@ cp -f "$IMG" "$OUT/Image"
 WORK=$(mktemp -d)
 git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg "$WORK/mkbootimg"
 git clone --depth=1 https://android.googlesource.com/platform/external/avb "$WORK/avb"
-chmod +x "$WORK/avb/avbtool" 2>/dev/null || true
+AVBTOOL=$(find "$WORK/avb" -maxdepth 3 -type f -name 'avbtool*' | head -n1 || true)
+MKBOOTIMG=$(find "$WORK/mkbootimg" -maxdepth 3 -type f -name 'mkbootimg.py' | head -n1 || true)
+[ -n "$MKBOOTIMG" ] || { echo "::error::mkbootimg.py not found"; exit 1; }
+[ -n "$AVBTOOL" ] || { echo "::error::avbtool not found"; exit 1; }
+echo "mkbootimg: $MKBOOTIMG"
+echo "avbtool:   $AVBTOOL"
 
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORK/key.pem" 2>/dev/null
 
-python3 "$WORK/mkbootimg/mkbootimg.py" \
+python3 "$MKBOOTIMG" \
   --header_version 4 \
   --kernel "$OUT/Image" \
   --output "$OUT/boot.img"
 
-python3 "$WORK/avb/avbtool" add_hash_footer \
+python3 "$AVBTOOL" add_hash_footer \
   --partition_name boot \
   --partition_size "$PART_SIZE" \
   --image "$OUT/boot.img" \
