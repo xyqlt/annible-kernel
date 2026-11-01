@@ -15,6 +15,9 @@ fi
 export CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/ccache}"
 export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-6G}"
 export CCACHE_COMPRESS="${CCACHE_COMPRESS:-1}"
+# LOCALVERSION must be *set* (even to empty) so scripts/setlocalversion does not
+# append "+"/"-g<hash>" to the pinned stock localversion.
+export LOCALVERSION=""
 
 CC="clang"
 if command -v ccache >/dev/null 2>&1; then
